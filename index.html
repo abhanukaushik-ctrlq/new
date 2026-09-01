@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>✦ 3D Multi-Tab Equation Explorer</title>
+    <script src="https://cdn.jsdelivr.net/npm/mathjs@12.2.3/lib/browser/math.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        :root {
+            --bg: #0d0b12;
+            --bg-card: #14111e;
+            --border: #2f2848;
+            --text: #f0ebf7;
+            --text-muted: #a094b8;
+            --gold: #d4af37;
+            --gold-dark: #b8941e;
+            --radius: 10px;
+            --font: 'Inter', system-ui, sans-serif;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font);
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #top-bar {
+            background: #120e1c;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 12px;
+            gap: 12px;
+            z-index: 100;
+        }
+
+        .tab-container {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            overflow-x: auto;
+            flex: 1;
+        }
+
+        .tab {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border);
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 13px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            white-space: nowrap;
+            color: var(--text-muted);
+            transition: all 0.2s ease;
+        }
+
+        .tab.active {
+            background: var(--bg-card);
+            border-color: var(--gold);
+            color: var(--text);
+            font-weight: 600;
+        }
+
+        .tab .close-tab {
+            font-size: 11px;
+            opacity: 0.6;
+            border-radius: 50%;
+            padding: 2px 4px;
+        }
+
+        .tab .close-tab:hover { opacity: 1; background: rgba(255,0,0,0.3); }
+
+        #addTabBtn {
+            background: rgba(212, 175, 55, 0.15);
+            border: 1px solid var(--gold);
+            color: var(--gold);
+            border-radius: 6px;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .key-input-group input {
+            background: rgba(0,0,0,0.4);
+            border: 1px solid var(--border);
+            color: var(--text);
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 12px;
+            width: 200px;
+        }
+
+        #workspace {
+            flex: 1;
+            position: relative;
+            width: 100%;
+            height: 100%;
+        }
+
+        .tab-viewport {
+            position: absolute;
+            top: 0; left: 0; right: 0; bottom: 0;
+            display: none;
+            flex-direction: column;
+        }
+
+        .tab-viewport.active { display: flex; }
+
+        .ui-panel {
+            position: absolute;
+            top: 16px; left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            background: rgba(20, 17, 30, 0.85);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(212, 175, 55, 0.2);
+            border-radius: var(--radius);
+            padding: 12px 18px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        }
+
+        .ui-panel input[type="text"] {
+            background: rgba(0,0,0,0.5);
+            border: 1px solid var(--border);
+            color: #fff;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-family: monospace;
+            width: 260px;
+        }
+
+        .ui-panel button {
+            background: linear-gradient(135deg, var(--gold), var(--gold-dark));
+            border: none;
+            color: #000;
+            font-weight: bold;
+            padding: 8px 14px;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .canvas-container { flex: 1; width: 100%; height: 100%; position: relative; }
+        .error-msg { color: #f28b82; font-size: 12px; position: absolute; bottom: -20px; left: 0; }
+    </style>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <div id="top-bar">
+        <div class="tab-container" id="tabContainer"></div>
+        <button id="addTabBtn">+ New Tab</button>
+        <div class="key-input-group">
+            <input type="password" id="apiKeyInput" placeholder="Enter Gemini API Key..." />
+        </div>
+    </div>
+
+    <div id="workspace"></div>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+        const apiKeyInput = document.getElementById('apiKeyInput');
+        const tabContainer = document.getElementById('tabContainer');
+        const addTabBtn = document.getElementById('addTabBtn');
+        const workspace = document.getElementById('workspace');
+        const STORAGE_KEY = 'equation_explorer_tabs';
+
+        apiKeyInput.value = localStorage.getItem('gemini_api_key') || '';
+        apiKeyInput.addEventListener('input', (e) => {
+            localStorage.setItem('gemini_api_key', e.target.value.trim());
+        });
+
+        let tabs = [];
+        let activeTabId = null;
+
+        class GraphTab {
+            constructor(id, title = "f(x,y)", initialEq = "sin(x)*cos(y)") {
+                this.id = id;
+                this.title = title;
+
+                this.viewport = document.createElement('div');
+                this.viewport.className = 'tab-viewport';
+                this.viewport.innerHTML = `
+                    <div class="ui-panel">
+                        <input type="text" class="eqInput" value="${initialEq}" placeholder="Equation e.g. x^2 - y^2" />
+                        <input type="file" class="imgInput" accept="image/*" style="display:none;" />
+                        <button class="uploadBtn">📷</button>
+                        <button class="plotBtn">Plot</button>
+                        <div class="error-msg"></div>
+                    </div>
+                    <div class="canvas-container"></div>
+                `;
+                workspace.appendChild(this.viewport);
+
+                this.container = this.viewport.querySelector('.canvas-container');
+                this.eqInput = this.viewport.querySelector('.eqInput');
+                this.imgInput = this.viewport.querySelector('.imgInput');
+                this.uploadBtn = this.viewport.querySelector('.uploadBtn');
+                this.plotBtn = this.viewport.querySelector('.plotBtn');
+                this.errorMsg = this.viewport.querySelector('.error-msg');
+
+                this.uploadBtn.addEventListener('click', () => this.imgInput.click());
+                this.imgInput.addEventListener('change', (e) => this.handleImageUpload(e));
+                
+                this.plotBtn.addEventListener('click', () => {
+                    this.plot();
+                    saveTabsState();
+                });
+
+                this.eqInput.addEventListener('input', () => saveTabsState());
+                this.eqInput.addEventListener('keydown', (e) => {
+                    if (e.key === 'Enter') {
+                        this.plot();
+                        saveTabsState();
+                    }
+                });
+
+                this.initThree();
+                this.plot();
+            }
+
+            initThree() {
+                this.scene = new THREE.Scene();
+                this.scene.background = new THREE.Color(0x0d0b12);
+
+                this.camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+                this.camera.position.set(10, 8, 12);
+
+                this.renderer = new THREE.WebGLRenderer({ antialias: true });
+                this.renderer.setSize(this.container.clientWidth || window.innerWidth, this.container.clientHeight || window.innerHeight);
+                this.container.appendChild(this.renderer.domElement);
+
+                this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+                this.controls.enableDamping = true;
+
+                const ambient = new THREE.AmbientLight(0xffffff, 0.8);
+                this.scene.add(ambient);
+
+                const grid = new THREE.GridHelper(12, 12, 0x2f2848, 0x1e1a2d);
+                this.scene.add(grid);
+
+                this.animate();
+            }
+
+            plot() {
+                const expr = this.eqInput.value.trim();
+                if (!expr) return;
+
+                if (this.mesh) {
+                    this.scene.remove(this.mesh);
+                    this.mesh.geometry.dispose();
+                    this.mesh.material.dispose();
+                }
+
+                try {
+                    const compiled = window.math.compile(expr);
+                    const range = 5, steps = 50, step = (2 * range) / steps;
+                    const positions = [], indices = [];
+
+                    for (let i = 0; i <= steps; i++) {
+                        const y = -range + i * step;
+                        for (let j = 0; j <= steps; j++) {
+                            const x = -range + j * step;
+                            let z = compiled.evaluate({ x, y });
+                            if (typeof z !== 'number' || !isFinite(z)) z = 0;
+                            positions.push(x, y, z);
+                        }
+                    }
+
+                    for (let i = 0; i < steps; i++) {
+                        for (let j = 0; j < steps; j++) {
+                            const a = i * (steps + 1) + j;
+                            const b = a + 1;
+                            const c = (i + 1) * (steps + 1) + j;
+                            const d = c + 1;
+                            indices.push(a, b, c, b, d, c);
+                        }
+                    }
+
+                    const geo = new THREE.BufferGeometry();
+                    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+                    geo.setIndex(indices);
+                    geo.computeVertexNormals();
+
+                    const mat = new THREE.MeshStandardMaterial({ color: 0xd4af37, side: THREE.DoubleSide, wireframe: false });
+                    this.mesh = new THREE.Mesh(geo, mat);
+                    this.scene.add(this.mesh);
+                    this.errorMsg.textContent = '';
+                } catch (err) {
+                    this.errorMsg.textContent = `⚠️ Invalid syntax`;
+                }
+            }
+
+            async handleImageUpload(e) {
+                const file = e.target.files[0];
+                if (!file) return;
+
+                const apiKey = localStorage.getItem('gemini_api_key');
+                const formData = new FormData();
+                formData.append('image', file);
+
+                try {
+                    const res = await fetch('/api/parse-equation', {
+                        method: 'POST',
+                        headers: { 'X-Gemini-Key': apiKey },
+                        body: formData
+                    });
+                    const data = await res.json();
+                    if (data.success) {
+                        this.eqInput.value = data.expression;
+                        this.plot();
+                        saveTabsState();
+                    } else {
+                        alert(data.error);
+                    }
+                } catch (err) {
+                    alert('Error parsing image');
+                }
+            }
+
+            resize() {
+                if (!this.container) return;
+                const w = this.container.clientWidth;
+                const h = this.container.clientHeight;
+                this.camera.aspect = w / h;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(w, h);
+            }
+
+            animate() {
+                requestAnimationFrame(() => this.animate());
+                this.controls.update();
+                this.renderer.render(this.scene, this.camera);
+            }
+
+            destroy() {
+                this.viewport.remove();
+                this.renderer.dispose();
+            }
+        }
+
+        function saveTabsState() {
+            const state = {
+                activeTabId: activeTabId,
+                tabs: tabs.map(t => ({ id: t.id, title: t.title, equation: t.eqInput.value }))
+            };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+        }
+
+        function createNewTab(title, equation) {
+            const id = 'tab_' + Date.now() + '_' + Math.random().toString(36).substring(2, 5);
+            const tabTitle = title || `Graph ${tabs.length + 1}`;
+            const tab = new GraphTab(id, tabTitle, equation);
+            tabs.push(tab);
+            switchTab(id);
+            renderTabs();
+            saveTabsState();
+        }
+
+        function switchTab(id) {
+            activeTabId = id;
+            tabs.forEach(t => {
+                if (t.id === id) {
+                    t.viewport.classList.add('active');
+                    t.resize();
+                } else {
+                    t.viewport.classList.remove('active');
+                }
+            });
+            renderTabs();
+            saveTabsState();
+        }
+
+        function closeTab(id, e) {
+            e.stopPropagation();
+            if (tabs.length === 1) return;
+            
+            const index = tabs.findIndex(t => t.id === id);
+            tabs[index].destroy();
+            tabs.splice(index, 1);
+
+            if (activeTabId === id) {
+                switchTab(tabs[Math.max(0, index - 1)].id);
+            } else {
+                renderTabs();
+                saveTabsState();
+            }
+        }
+
+        function renderTabs() {
+            tabContainer.innerHTML = '';
+            tabs.forEach(t => {
+                const el = document.createElement('div');
+                el.className = `tab ${t.id === activeTabId ? 'active' : ''}`;
+                el.innerHTML = `<span>${t.title}</span><span class="close-tab">✕</span>`;
+                el.addEventListener('click', () => switchTab(t.id));
+                el.querySelector('.close-tab').addEventListener('click', (e) => closeTab(t.id, e));
+                tabContainer.appendChild(el);
+            });
+        }
+
+        function loadSavedTabs() {
+            const rawData = localStorage.getItem(STORAGE_KEY);
+            if (!rawData) {
+                createNewTab();
+                return;
+            }
+
+            try {
+                const state = JSON.parse(rawData);
+                if (!state.tabs || state.tabs.length === 0) {
+                    createNewTab();
+                    return;
+                }
+
+                state.tabs.forEach(saved => {
+                    const tab = new GraphTab(saved.id, saved.title, saved.equation);
+                    tabs.push(tab);
+                });
+
+                const targetActiveId = state.activeTabId && tabs.some(t => t.id === state.activeTabId)
+                    ? state.activeTabId
+                    : tabs[0].id;
+
+                switchTab(targetActiveId);
+            } catch (e) {
+                createNewTab();
+            }
+        }
+
+        addTabBtn.addEventListener('click', () => createNewTab());
+        window.addEventListener('resize', () => {
+            const active = tabs.find(t => t.id === activeTabId);
+            if (active) active.resize();
+        });
+
+        loadSavedTabs();
+    </script>
+</body>
+</html>
